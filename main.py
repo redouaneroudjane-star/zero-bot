@@ -59,7 +59,10 @@ async def send_message(chat_id: int, text: str, reply_markup=None):
 
 async def answer_callback(callback_id: str, text: str = ""):
     await tg("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
-
+async def send_channel_message(text: str):
+    if not CHANNEL_ID:
+        raise RuntimeError("CHANNEL_ID is missing")
+    await send_message(int(CHANNEL_ID), text)
 async def show_menu(chat_id: int):
     await send_message(
         chat_id,
