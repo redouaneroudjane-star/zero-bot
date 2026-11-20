@@ -6,7 +6,7 @@ from fastapi.responses import PlainTextResponse
 BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
-
+CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required")
 
