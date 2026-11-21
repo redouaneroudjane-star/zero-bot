@@ -96,6 +96,7 @@ async def health():
 
 @app.on_event("startup")
 async def register_webhook():
+    init_db()
     if PUBLIC_URL:
         payload = {"url": f"{PUBLIC_URL}/telegram/{WEBHOOK_SECRET}"}
         await tg("setWebhook", payload)
