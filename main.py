@@ -117,7 +117,7 @@ async def telegram_webhook(secret: str, request: Request):
                 except Exception:
                     await send_message(chat_id, "❌ تعذر النشر. تحقق من صلاحيات البوت ومعرّف القناة.")
  
-        if text in ("/start", "start", "/menu", "menu"):
+        elif text in ("/start", "start", "/menu", "menu"):
             await show_menu(chat_id)
         elif text in ("/help", "help"):
             await send_message(chat_id, "استخدم /start لفتح القائمة. اختر الشبكة، ثم اتبع الروابط الرسمية للتحقق من العروض.")
