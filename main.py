@@ -1,6 +1,7 @@
 import os
 import uuid
 import httpx
+from database import init_db, save_user
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
 
