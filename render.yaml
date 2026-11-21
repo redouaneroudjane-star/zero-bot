@@ -10,3 +10,9 @@ services:
         sync: false
       - key: WEBHOOK_SECRET
         generateValue: true
+      - key: CHANNEL_ID
+        sync: false
+      - key: ADMIN_CHAT_ID
+        sync: false
+      - key: DATABASE_URL
+        sync: false
