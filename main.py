@@ -1,4 +1,5 @@
 import os
+import uuid
 import httpx
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import PlainTextResponse
@@ -7,11 +8,15 @@ BOT_TOKEN = os.getenv("BOT_TOKEN", "").strip()
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "").strip()
 PUBLIC_URL = os.getenv("RENDER_EXTERNAL_URL", "").rstrip("/")
 CHANNEL_ID = os.getenv("CHANNEL_ID", "").strip()
+ADMIN_CHAT_ID = os.getenv("ADMIN_CHAT_ID", "").strip()
 if not BOT_TOKEN:
     raise RuntimeError("BOT_TOKEN environment variable is required")
 
 API = f"https://api.telegram.org/bot{BOT_TOKEN}"
 app = FastAPI(title="ZERO BOT")
+
+# Pending approvals are stored in memory. A restart clears pending items.
+PENDING_OFFERS = {}
 
 NETWORKS = {
     "djezzy": {
@@ -59,10 +64,12 @@ async def send_message(chat_id: int, text: str, reply_markup=None):
 
 async def answer_callback(callback_id: str, text: str = ""):
     await tg("answerCallbackQuery", {"callback_query_id": callback_id, "text": text})
+
 async def send_channel_message(text: str):
     if not CHANNEL_ID:
         raise RuntimeError("CHANNEL_ID is missing")
     await send_message(int(CHANNEL_ID), text)
+
 async def show_menu(chat_id: int):
     await send_message(
         chat_id,
@@ -72,15 +79,15 @@ async def show_menu(chat_id: int):
 
 async def show_network(chat_id: int, key: str):
     item = NETWORKS[key]
-    rows = [
-        ("🌐 الموقع الرسمي", f"url:{key}"),
-        ("⬅️ القائمة الرئيسية", "menu"),
-    ]
+    rows = [("🌐 الموقع الرسمي", f"url:{key}"), ("⬅️ القائمة الرئيسية", "menu")]
     await send_message(
         chat_id,
         f"{item['name']}\n\n{item['note']}\n\nلا تدخل كلمة مرورك أو رمز SMS في البوت. استخدم التطبيق أو الموقع الرسمي للمتعامل للتحقق من أهليتك وتأكيد أي تفعيل.",
         keyboard(rows)
     )
+
+def is_admin(user_id: int) -> bool:
+    return bool(ADMIN_CHAT_ID) and str(user_id) == ADMIN_CHAT_ID
 
 @app.get("/", response_class=PlainTextResponse)
 async def health():
@@ -88,10 +95,9 @@ async def health():
 
 @app.on_event("startup")
 async def register_webhook():
-    if not PUBLIC_URL:
-        return
-    payload = {"url": f"{PUBLIC_URL}/telegram/{WEBHOOK_SECRET}"}
-    await tg("setWebhook", payload)
+    if PUBLIC_URL:
+        payload = {"url": f"{PUBLIC_URL}/telegram/{WEBHOOK_SECRET}"}
+        await tg("setWebhook", payload)
 
 @app.post("/telegram/{secret}")
 async def telegram_webhook(secret: str, request: Request):
@@ -102,15 +108,39 @@ async def telegram_webhook(secret: str, request: Request):
     message = update.get("message")
     if message:
         chat_id = message["chat"]["id"]
-        text = (message.get("text") or "").strip().lower()
+        user_id = message["from"]["id"]
+        raw_text = (message.get("text") or "").strip()
+        text = raw_text.lower()
+
         if text in ("/myid", "myid"):
             await send_message(chat_id, f"معرّف محادثتك (Chat ID): {chat_id}\nاحتفظ به ولا تنشره علناً.")
+        elif text.startswith("/candidate"):
+            if not is_admin(user_id) or chat_id != int(ADMIN_CHAT_ID):
+                await send_message(chat_id, "هذا الأمر مخصص للمشرف فقط.")
+            else:
+                body = raw_text[len("/candidate"):].strip()
+                if len(body) < 30 or ("http://" not in body and "https://" not in body):
+                    await send_message(
+                        chat_id,
+                        "أرسل العرض بهذا الشكل:\n/candidate\nاسم العرض والشبكة\nالتفاصيل والسعر/الحجم والمدة\nالشروط والأهلية\nالمصدر الرسمي: https://...\nتاريخ الانتهاء أو غير محدد"
+                    )
+                else:
+                    offer_id = uuid.uuid4().hex[:12]
+                    PENDING_OFFERS[offer_id] = body
+                    await send_message(
+                        chat_id,
+                        "📝 عرض بانتظار قرارك — لم يُنشر بعد:\n\n" + body,
+                        {"inline_keyboard": [[
+                            {"text": "✅ نشر في القناة", "callback_data": f"offer:publish:{offer_id}"},
+                            {"text": "❌ رفض", "callback_data": f"offer:reject:{offer_id}"}
+                        ]]}
+                    )
         elif text in ("/test_channel", "test_channel"):
             if not CHANNEL_ID:
                 await send_message(chat_id, "لم يتم ضبط CHANNEL_ID في إعدادات الاستضافة.")
             else:
                 try:
-                    member = await tg("getChatMember", {"chat_id": int(CHANNEL_ID), "user_id": message["from"]["id"]})
+                    member = await tg("getChatMember", {"chat_id": int(CHANNEL_ID), "user_id": user_id})
                     if member.get("status") not in ("creator", "administrator"):
                         await send_message(chat_id, "هذا الاختبار متاح لمسؤولي القناة فقط.")
                     else:
@@ -118,19 +148,44 @@ async def telegram_webhook(secret: str, request: Request):
                         await send_message(chat_id, "✅ نجح الاختبار! تحقق من القناة.")
                 except Exception:
                     await send_message(chat_id, "❌ تعذر النشر. تحقق من صلاحيات البوت ومعرّف القناة.")
- 
         elif text in ("/start", "start", "/menu", "menu"):
             await show_menu(chat_id)
         elif text in ("/help", "help"):
-            await send_message(chat_id, "استخدم /start لفتح القائمة. اختر الشبكة، ثم اتبع الروابط الرسمية للتحقق من العروض.")
+            extra = "\nللمشرف: أرسل /candidate ثم تفاصيل العرض ومصدره لإرساله للمراجعة." if is_admin(user_id) else ""
+            await send_message(chat_id, "استخدم /start لفتح القائمة. اختر الشبكة، ثم اتبع الروابط الرسمية للتحقق من العروض." + extra)
         else:
             await send_message(chat_id, "لم أفهم طلبك. أرسل /start لعرض القائمة الرئيسية.")
         return {"ok": True}
 
     callback = update.get("callback_query")
     if callback:
-        chat_id = callback["message"]["chat"]["id"]
         data = callback.get("data", "")
+        actor_id = callback.get("from", {}).get("id")
+        chat_id = callback.get("message", {}).get("chat", {}).get("id")
+        if data.startswith("offer:"):
+            if not is_admin(actor_id) or chat_id != int(ADMIN_CHAT_ID):
+                await answer_callback(callback["id"], "غير مسموح.")
+                return {"ok": True}
+            _, action, offer_id = data.split(":", 2)
+            body = PENDING_OFFERS.get(offer_id)
+            if not body:
+                await answer_callback(callback["id"], "انتهت صلاحية هذا الطلب أو عولج مسبقاً.")
+                return {"ok": True}
+            if action == "publish":
+                try:
+                    await send_channel_message("📢 عرض جديد — ZERO BOT\n\n" + body)
+                except Exception:
+                    await answer_callback(callback["id"], "تعذر النشر؛ تحقق من صلاحيات البوت.")
+                    return {"ok": True}
+                PENDING_OFFERS.pop(offer_id, None)
+                await answer_callback(callback["id"], "تم النشر.")
+                await send_message(chat_id, "✅ تم نشر العرض في القناة.")
+            elif action == "reject":
+                PENDING_OFFERS.pop(offer_id, None)
+                await answer_callback(callback["id"], "تم رفض العرض.")
+                await send_message(chat_id, "❌ تم رفض العرض ولن يُنشر.")
+            return {"ok": True}
+
         await answer_callback(callback["id"])
         if data == "menu":
             await show_menu(chat_id)
