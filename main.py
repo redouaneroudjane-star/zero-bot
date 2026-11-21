@@ -116,19 +116,7 @@ async def telegram_webhook(secret: str, request: Request):
                         await send_message(chat_id, "✅ نجح الاختبار! تحقق من القناة.")
                 except Exception:
                     await send_message(chat_id, "❌ تعذر النشر. تحقق من صلاحيات البوت ومعرّف القناة.")
-        if text in ("/test_channel", "test_channel"):
-            if not CHANNEL_ID:
-                await send_message(chat_id, "لم يتم ضبط CHANNEL_ID في إعدادات الاستضافة.")
-            else:
-                try:
-                    member = await tg("getChatMember", {"chat_id": int(CHANNEL_ID), "user_id": message["from"]["id"]})
-                    if member.get("status") not in ("creator", "administrator"):
-                        await send_message(chat_id, "هذا الاختبار متاح لمسؤولي القناة فقط.")
-                    else:
-                        await send_channel_message("✅ ZERO BOT متصل بالقناة بنجاح! هذه رسالة اختبار.")
-                        await send_message(chat_id, "✅ نجح الاختبار! تحقق من القناة.")
-                except Exception:
-                    await send_message(chat_id, "❌ تعذر النشر. تحقق من صلاحيات البوت ومعرّف القناة.")
+ 
         if text in ("/start", "start", "/menu", "menu"):
             await show_menu(chat_id)
         elif text in ("/help", "help"):
