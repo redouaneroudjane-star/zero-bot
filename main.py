@@ -103,7 +103,9 @@ async def telegram_webhook(secret: str, request: Request):
     if message:
         chat_id = message["chat"]["id"]
         text = (message.get("text") or "").strip().lower()
-        if text in ("/test_channel", "test_channel"):
+         if text in ("/myid", "myid"):
+            await send_message(chat_id, f"معرّف محادثتك (Chat ID): {chat_id}\nاحتفظ به ولا تنشره علناً.")
+        elif text in ("/test_channel", "test_channel"):
             if not CHANNEL_ID:
                 await send_message(chat_id, "لم يتم ضبط CHANNEL_ID في إعدادات الاستضافة.")
             else:
