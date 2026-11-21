@@ -1,106 +1,172 @@
-
-"""Database layer for ZERO-BOT."""
 import os
-import sqlite3
-from contextlib import contextmanager
+import psycopg
+from psycopg.rows import dict_row
 
-DB_PATH = os.getenv("SQLITE_PATH", "zero_bot.db")
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 
-@contextmanager
-def get_connection():
-    connection = sqlite3.connect(DB_PATH)
-    connection.row_factory = sqlite3.Row
-    try:
-        yield connection
-        connection.commit()
-    except Exception:
-        connection.rollback()
-        raise
-    finally:
-        connection.close()
+def db():
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured")
+    return psycopg.connect(
+        DATABASE_URL,
+        row_factory=dict_row,
+        connect_timeout=10
+    )
 
 
 def init_db():
-    with get_connection() as db:
-        db.execute("""
+    with db() as conn:
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                telegram_id INTEGER PRIMARY KEY,
+                user_id BIGINT PRIMARY KEY,
                 username TEXT,
                 first_name TEXT,
-                network TEXT,
-                notifications_enabled INTEGER DEFAULT 1,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                network TEXT DEFAULT 'all',
+                notifications BOOLEAN DEFAULT TRUE,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW()
             )
         """)
 
-        db.execute("""
+        conn.execute("""
             CREATE TABLE IF NOT EXISTS offers (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                id BIGSERIAL PRIMARY KEY,
                 title TEXT NOT NULL,
                 network TEXT NOT NULL,
-                details TEXT,
-                price TEXT,
-                duration TEXT,
-                eligibility TEXT,
+                details TEXT NOT NULL,
+                conditions TEXT DEFAULT '',
                 source_url TEXT NOT NULL,
-                expires_at TEXT,
+                expiry TEXT DEFAULT 'غير محدد',
                 status TEXT DEFAULT 'pending',
-                fingerprint TEXT UNIQUE NOT NULL,
-                submitted_by INTEGER,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                submitted_by BIGINT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                reviewed_at TIMESTAMPTZ
             )
         """)
 
 
-def save_user(telegram_id, username=None, first_name=None, network=None):
-    with get_connection() as db:
-        db.execute("""
-            INSERT INTO users (telegram_id, username, first_name, network)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(telegram_id) DO UPDATE SET
-                username = excluded.username,
-                first_name = excluded.first_name,
-                network = COALESCE(excluded.network, users.network)
-        """, (telegram_id, username, first_name, network))
+def save_user(user_id, username=None, first_name=None):
+    with db() as conn:
+        conn.execute("""
+            INSERT INTO users (user_id, username, first_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                first_name = EXCLUDED.first_name,
+                updated_at = NOW()
+        """, (user_id, username, first_name))
 
 
-def save_offer(title, network, source_url, fingerprint,
-               details=None, price=None, duration=None,
-               eligibility=None, expires_at=None, submitted_by=None):
-    with get_connection() as db:
-        cursor = db.execute("""
-            INSERT OR IGNORE INTO offers (
-                title, network, details, price, duration,
-                eligibility, source_url, expires_at,
-                fingerprint, submitted_by
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+def set_user_network(user_id, network):
+    with db() as conn:
+        conn.execute("""
+            UPDATE users SET network=%s, updated_at=NOW()
+            WHERE user_id=%s
+        """, (network, user_id))
+
+
+def set_user_notifications(user_id, enabled):
+    with db() as conn:
+        conn.execute("""
+            UPDATE users SET notifications=%s, updated_at=NOW()
+            WHERE user_id=%s
+        """, (enabled, user_id))
+
+
+def create_offer(title, network, details, conditions,
+                 source_url, expiry, submitted_by):
+    with db() as conn:
+        existing = conn.execute("""
+            SELECT id FROM offers
+            WHERE network=%s AND title=%s AND source_url=%s
+            LIMIT 1
+        """, (network, title, source_url)).fetchone()
+
+        if existing:
+            return None
+
+        row = conn.execute("""
+            INSERT INTO offers
+            (title, network, details, conditions,
+             source_url, expiry, submitted_by)
+            VALUES (%s,%s,%s,%s,%s,%s,%s)
+            RETURNING id
         """, (
-            title, network, details, price, duration,
-            eligibility, source_url, expires_at,
-            fingerprint, submitted_by
-        ))
-        return cursor.rowcount > 0
+            title, network, details, conditions,
+            source_url, expiry, submitted_by
+        )).fetchone()
+
+        return row["id"]
 
 
-def list_pending_offers(limit=50):
-    with get_connection() as db:
-        rows = db.execute("""
-            SELECT * FROM offers
-            WHERE status = 'pending'
-            ORDER BY created_at DESC
-            LIMIT ?
-        """, (max(1, min(int(limit), 200)),)).fetchall()
-        return [dict(row) for row in rows]
+def get_offer(offer_id):
+    with db() as conn:
+        return conn.execute(
+            "SELECT * FROM offers WHERE id=%s",
+            (offer_id,)
+        ).fetchone()
 
 
 def set_offer_status(offer_id, status):
-    if status not in ("approved", "rejected", "pending"):
-        raise ValueError("Invalid offer status")
+    with db() as conn:
+        conn.execute("""
+            UPDATE offers
+            SET status=%s, reviewed_at=NOW()
+            WHERE id=%s
+        """, (status, offer_id))
 
-    with get_connection() as db:
-        cursor = db.execute(
-            "UPDATE offers SET status = ? WHERE id = ?",
-            (status, offer_id)
-        )
-        return cursor.rowcount > 0
+
+def list_pending_offers():
+    with db() as conn:
+        return conn.execute("""
+            SELECT * FROM offers
+            WHERE status='pending'
+            ORDER BY created_at DESC
+            LIMIT 50
+        """).fetchall()
+
+
+def list_approved_offers(limit=10):
+    with db() as conn:
+        return conn.execute("""
+            SELECT * FROM offers
+            WHERE status='approved'
+            ORDER BY created_at DESC
+            LIMIT %s
+        """, (limit,)).fetchall()
+
+
+def list_subscribers(network):
+    with db() as conn:
+        return conn.execute("""
+            SELECT user_id FROM users
+            WHERE notifications=TRUE
+            AND (network=%s OR network='all')
+        """, (network,)).fetchall()
+
+
+def get_stats():
+    with db() as conn:
+        users = conn.execute(
+            "SELECT COUNT(*) AS n FROM users"
+        ).fetchone()["n"]
+
+        pending = conn.execute(
+            "SELECT COUNT(*) AS n FROM offers WHERE status='pending'"
+        ).fetchone()["n"]
+
+        approved = conn.execute(
+            "SELECT COUNT(*) AS n FROM offers WHERE status='approved'"
+        ).fetchone()["n"]
+
+        rejected = conn.execute(
+            "SELECT COUNT(*) AS n FROM offers WHERE status='rejected'"
+        ).fetchone()["n"]
+
+        return {
+            "users": users,
+            "pending": pending,
+            "approved": approved,
+            "rejected": rejected
+        }
