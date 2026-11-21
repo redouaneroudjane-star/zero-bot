@@ -1,19 +1,16 @@
-
-name: ZERO BOT - Scan Offers
+name: ZERO-BOT Offer Scanner
 
 on:
   schedule:
     - cron: "0 */6 * * *"
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   scan:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Setup Python
@@ -24,7 +21,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Scan official offers
+      - name: Scan official websites
         run: python scanner.py
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
